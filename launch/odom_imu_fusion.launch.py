@@ -22,6 +22,14 @@ def generate_launch_description():
     # Get launch configurations
     config_file = LaunchConfiguration('config_file')
     
+    # TF frame publisher node
+    tf_publisher_node = Node(
+        package='robot_localization_fusion',
+        executable='tf_publisher.py',
+        name='tf_frame_publisher',
+        output='screen'
+    )
+    
     # EKF filter node for fusing odometry and IMU
     ekf_filter_node = Node(
         package='robot_localization',
@@ -37,5 +45,6 @@ def generate_launch_description():
     
     return LaunchDescription([
         config_file_arg,
+        tf_publisher_node,
         ekf_filter_node,
     ])
