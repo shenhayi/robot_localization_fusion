@@ -15,21 +15,33 @@ def generate_launch_description():
     # Declare launch arguments
     config_file_arg = DeclareLaunchArgument(
         'config_file',
-        default_value=os.path.join(pkg_share, 'config', 'ekf_fusion.yaml'),
+        default_value=os.path.join(pkg_share, 'config', 'ekf_body_imu_fusion.yaml'),
         description='Full path to the EKF configuration file'
     )
     
-    use_sim_time_arg = DeclareLaunchArgument(
-        'use_sim_time',
-        default_value='false',
-        description='Use simulation (Gazebo) clock if true'
+    body_odom_topic_arg = DeclareLaunchArgument(
+        'body_odom_topic',
+        default_value='/body_odometry',
+        description='Body odometry topic for body IMU fusion mode'
     )
     
     # Get launch configurations
     config_file = LaunchConfiguration('config_file')
-    use_sim_time = LaunchConfiguration('use_sim_time')
+    body_odom_topic = LaunchConfiguration('body_odom_topic')
     
-    # EKF filter node
+    # TF frame publisher node (body IMU fusion mode)
+    tf_publisher_node = Node(
+        package='robot_localization_fusion',
+        executable='tf_publisher.py',
+        name='tf_frame_publisher',
+        output='screen',
+        parameters=[{
+            'fusion_mode': 'body_imu_fusion',
+            'body_odom_topic': body_odom_topic
+        }]
+    )
+    
+    # EKF filter node for fusing body IMU and odometry
     ekf_filter_node = Node(
         package='robot_localization',
         executable='ekf_node',
@@ -39,22 +51,12 @@ def generate_launch_description():
         remappings=[
             ('/odometry/filtered', '/odom'),
             ('/pose/filtered', '/pose')
-        ],
-        arguments=['--ros-args', '--log-level', 'info']
+        ]
     )
-    
-    # Optional: Static transform publisher for base_link to imu_link
-    # Uncomment if you need a static transform between base_link and IMU
-    # static_transform_publisher = Node(
-    #     package='tf2_ros',
-    #     executable='static_transform_publisher',
-    #     name='base_link_to_imu_link',
-    #     arguments=['0', '0', '0', '0', '0', '0', 'base_link', 'imu_link']
-    # )
     
     return LaunchDescription([
         config_file_arg,
-        use_sim_time_arg,
+        body_odom_topic_arg,
+        tf_publisher_node,
         ekf_filter_node,
-        # static_transform_publisher,  # Uncomment if needed
     ])

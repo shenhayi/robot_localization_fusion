@@ -19,18 +19,29 @@ def generate_launch_description():
         description='Full path to the EKF configuration file'
     )
     
+    body_odom_topic_arg = DeclareLaunchArgument(
+        'body_odom_topic',
+        default_value='/body_odometry',
+        description='Body odometry topic (for future use)'
+    )
+    
     # Get launch configurations
     config_file = LaunchConfiguration('config_file')
+    body_odom_topic = LaunchConfiguration('body_odom_topic')
     
-    # TF frame publisher node
+    # TF frame publisher node (direct odometry mode)
     tf_publisher_node = Node(
         package='robot_localization_fusion',
         executable='tf_publisher.py',
         name='tf_frame_publisher',
-        output='screen'
+        output='screen',
+        parameters=[{
+            'fusion_mode': 'direct_odometry',
+            'body_odom_topic': body_odom_topic
+        }]
     )
     
-    # EKF filter node for fusing odometry and IMU
+    # EKF filter node for fusing LIO odometry and livox IMU
     ekf_filter_node = Node(
         package='robot_localization',
         executable='ekf_node',
@@ -45,6 +56,7 @@ def generate_launch_description():
     
     return LaunchDescription([
         config_file_arg,
+        body_odom_topic_arg,
         tf_publisher_node,
         ekf_filter_node,
     ])
