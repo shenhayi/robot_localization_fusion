@@ -15,7 +15,7 @@ def generate_launch_description():
     # Declare launch arguments
     config_file_arg = DeclareLaunchArgument(
         'config_file',
-        default_value=os.path.join(pkg_share, 'config', 'ekf_body_imu_fusion.yaml'),
+        default_value=os.path.join(pkg_share, 'config', 'ekf_fusion.yaml'),
         description='Full path to the EKF configuration file'
     )
     
