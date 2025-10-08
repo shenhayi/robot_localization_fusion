@@ -6,6 +6,8 @@ from geometry_msgs.msg import TransformStamped, PoseStamped
 from nav_msgs.msg import Odometry
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster, Buffer, TransformListener
 import tf2_geometry_msgs
+import numpy as np
+from scipy.spatial.transform import Rotation
 
 class TFFramePublisher(Node):
     def __init__(self):
@@ -62,7 +64,44 @@ class TFFramePublisher(Node):
         self.odom_timer = self.create_timer(1.0/30.0, self.calculate_and_publish_odometry)  # 30Hz
     
     def odom_callback(self, msg):
-        """Callback for odometry to publish camera_init -> livox_frame transform"""
+        """Callback for odometry to publish map -> camera_init and camera_init -> livox_frame transforms"""
+        # Create transform from map to camera_init with offset
+        t_map_to_camera_init = TransformStamped()
+        t_map_to_camera_init.header.stamp = msg.header.stamp
+        t_map_to_camera_init.header.frame_id = 'map'
+        t_map_to_camera_init.child_frame_id = 'camera_init'
+        
+        # Offset camera_init so that body_odometry is at origin
+        # LiDAR offset: (0.1710, 0, 0.0968) relative to body
+        lidar_offset_x = 0.1710
+        lidar_offset_y = 0.0
+        lidar_offset_z = 0.0968  # 0.0908 for XT-16
+        
+        # Apply offset in the direction of LiDAR relative to body
+        # The offset direction rotates with the robot, but frame rotation is identity
+        lidar_offset_in_body = np.array([lidar_offset_x, lidar_offset_y, lidar_offset_z])
+        
+        # Get rotation matrix from odometry quaternion
+        quat = [msg.pose.pose.orientation.x, 
+               msg.pose.pose.orientation.y,
+               msg.pose.pose.orientation.z,
+               msg.pose.pose.orientation.w]
+        rotation = Rotation.from_quat(quat)
+        rotation_matrix = rotation.as_matrix()
+        
+        # Transform offset from body frame to map frame
+        lidar_offset_in_map = rotation_matrix @ lidar_offset_in_body
+        
+        t_map_to_camera_init.transform.translation.x = lidar_offset_in_map[0]
+        t_map_to_camera_init.transform.translation.y = lidar_offset_in_map[1]
+        t_map_to_camera_init.transform.translation.z = lidar_offset_in_map[2]
+        
+        # Camera_init rotates with the robot
+        t_map_to_camera_init.transform.rotation.x = msg.pose.pose.orientation.x
+        t_map_to_camera_init.transform.rotation.y = msg.pose.pose.orientation.y
+        t_map_to_camera_init.transform.rotation.z = msg.pose.pose.orientation.z
+        t_map_to_camera_init.transform.rotation.w = msg.pose.pose.orientation.w
+        
         # Create transform from camera_init to livox_frame based on odometry
         t_camera_init_to_livox = TransformStamped()
         t_camera_init_to_livox.header.stamp = msg.header.stamp
@@ -74,16 +113,54 @@ class TFFramePublisher(Node):
         t_camera_init_to_livox.transform.translation.y = msg.pose.pose.position.y
         t_camera_init_to_livox.transform.translation.z = msg.pose.pose.position.z
         
-        t_camera_init_to_livox.transform.rotation.x = -msg.pose.pose.orientation.x
-        t_camera_init_to_livox.transform.rotation.y = -msg.pose.pose.orientation.y
-        t_camera_init_to_livox.transform.rotation.z = -msg.pose.pose.orientation.z
+        t_camera_init_to_livox.transform.rotation.x = msg.pose.pose.orientation.x
+        t_camera_init_to_livox.transform.rotation.y = msg.pose.pose.orientation.y
+        t_camera_init_to_livox.transform.rotation.z = msg.pose.pose.orientation.z
         t_camera_init_to_livox.transform.rotation.w = msg.pose.pose.orientation.w
         
-        # Publish the dynamic transform
+        # Publish both dynamic transforms
+        self.tf_broadcaster.sendTransform(t_map_to_camera_init)
         self.tf_broadcaster.sendTransform(t_camera_init_to_livox)
     
     def body_odom_callback(self, msg):
-        """Callback for body odometry to publish camera_init -> body transform"""
+        """Callback for body odometry to publish map -> camera_init and camera_init -> body transforms"""
+        # Create transform from map to camera_init with offset
+        t_map_to_camera_init = TransformStamped()
+        t_map_to_camera_init.header.stamp = msg.header.stamp
+        t_map_to_camera_init.header.frame_id = 'map'
+        t_map_to_camera_init.child_frame_id = 'camera_init'
+        
+        # Offset camera_init so that body_odometry is at origin
+        # LiDAR offset: (0.1710, 0, 0.0968) relative to body
+        lidar_offset_x = 0.1710
+        lidar_offset_y = 0.0
+        lidar_offset_z = 0.0968  # 0.0908 for XT-16
+        
+        # Apply offset in the direction of LiDAR relative to body
+        # The offset direction rotates with the robot, but frame rotation is identity
+        lidar_offset_in_body = np.array([lidar_offset_x, lidar_offset_y, lidar_offset_z])
+        
+        # Get rotation matrix from body odometry quaternion
+        quat = [msg.pose.pose.orientation.x, 
+               msg.pose.pose.orientation.y,
+               msg.pose.pose.orientation.z,
+               msg.pose.pose.orientation.w]
+        rotation = Rotation.from_quat(quat)
+        rotation_matrix = rotation.as_matrix()
+        
+        # Transform offset from body frame to map frame
+        lidar_offset_in_map = rotation_matrix @ lidar_offset_in_body
+        
+        t_map_to_camera_init.transform.translation.x = lidar_offset_in_map[0]
+        t_map_to_camera_init.transform.translation.y = lidar_offset_in_map[1]
+        t_map_to_camera_init.transform.translation.z = lidar_offset_in_map[2]
+        
+        # Camera_init rotates with the robot
+        t_map_to_camera_init.transform.rotation.x = msg.pose.pose.orientation.x
+        t_map_to_camera_init.transform.rotation.y = msg.pose.pose.orientation.y
+        t_map_to_camera_init.transform.rotation.z = msg.pose.pose.orientation.z
+        t_map_to_camera_init.transform.rotation.w = msg.pose.pose.orientation.w
+        
         # Create transform from camera_init to body based on body odometry
         t_camera_init_to_body = TransformStamped()
         t_camera_init_to_body.header.stamp = msg.header.stamp
@@ -95,20 +172,21 @@ class TFFramePublisher(Node):
         t_camera_init_to_body.transform.translation.y = msg.pose.pose.position.y
         t_camera_init_to_body.transform.translation.z = msg.pose.pose.position.z
         
-        t_camera_init_to_body.transform.rotation.x = -msg.pose.pose.orientation.x
-        t_camera_init_to_body.transform.rotation.y = -msg.pose.pose.orientation.y
-        t_camera_init_to_body.transform.rotation.z = -msg.pose.pose.orientation.z
+        t_camera_init_to_body.transform.rotation.x = msg.pose.pose.orientation.x
+        t_camera_init_to_body.transform.rotation.y = msg.pose.pose.orientation.y
+        t_camera_init_to_body.transform.rotation.z = msg.pose.pose.orientation.z
         t_camera_init_to_body.transform.rotation.w = msg.pose.pose.orientation.w
         
-        # Publish the dynamic transform
+        # Publish both dynamic transforms
+        self.tf_broadcaster.sendTransform(t_map_to_camera_init)
         self.tf_broadcaster.sendTransform(t_camera_init_to_body)
     
     def calculate_and_publish_body_odometry(self):
-        """Calculate body odometry relative to map and publish it"""
+        """Calculate body odometry relative to map by subtracting offset from livox_frame"""
         try:
-            # Get transform from map to body
+            # Get transform from map to livox_frame
             transform = self.tf_buffer.lookup_transform(
-                'map', 'body', rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1)
+                'map', 'livox_frame', rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1)
             )
             
             # Create body odometry message
@@ -117,11 +195,19 @@ class TFFramePublisher(Node):
             body_odom.header.frame_id = 'map'
             body_odom.child_frame_id = 'body'
             
-            # Set pose from transform
-            body_odom.pose.pose.position.x = transform.transform.translation.x
-            body_odom.pose.pose.position.y = transform.transform.translation.y
-            body_odom.pose.pose.position.z = transform.transform.translation.z
+            # Calculate body position by subtracting LiDAR offset from livox_frame position
+            # LiDAR offset: (0.1710, 0, 0.0968) relative to body
+            # So body position = livox_frame position - offset
+            lidar_offset_x = 0.1710
+            lidar_offset_y = 0.0
+            lidar_offset_z = 0.0968  # 0.0908 for XT-16
             
+            # Body position = livox_frame position - LiDAR offset
+            body_odom.pose.pose.position.x = transform.transform.translation.x - lidar_offset_x
+            body_odom.pose.pose.position.y = transform.transform.translation.y - lidar_offset_y
+            body_odom.pose.pose.position.z = transform.transform.translation.z - lidar_offset_z
+            
+            # Body orientation is the same as livox_frame orientation
             body_odom.pose.pose.orientation.x = transform.transform.rotation.x
             body_odom.pose.pose.orientation.y = transform.transform.rotation.y
             body_odom.pose.pose.orientation.z = transform.transform.rotation.z
@@ -197,50 +283,8 @@ class TFFramePublisher(Node):
         self.calculate_and_publish_lidar_odometry()
     
     def publish_static_transforms(self):
-        """Publish static transforms based on fusion mode"""
-        
-        # Transform: map -> camera_init (identity transform since camera_init is LIO's world frame)
-        t_map_to_camera_init = TransformStamped()
-        t_map_to_camera_init.header.stamp = rclpy.time.Time(seconds=0).to_msg()  # Use Time(0) for static transforms
-        t_map_to_camera_init.header.frame_id = 'map'
-        t_map_to_camera_init.child_frame_id = 'camera_init'
-        
-        # Identity transform (no translation, no rotation)
-        t_map_to_camera_init.transform.translation.x = 0.0
-        t_map_to_camera_init.transform.translation.y = 0.0
-        t_map_to_camera_init.transform.translation.z = 0.0
-        
-        t_map_to_camera_init.transform.rotation.x = 0.0
-        t_map_to_camera_init.transform.rotation.y = 0.0
-        t_map_to_camera_init.transform.rotation.z = 0.0
-        t_map_to_camera_init.transform.rotation.w = 1.0
-        
-        # Publish map->camera_init transform
-        self.tf_static_broadcaster.sendTransform(t_map_to_camera_init)
-        
-        if self.fusion_mode == 'body_imu_fusion':
-            # Transform: body -> livox_frame (only needed in body IMU fusion mode)
-            t_body_to_livox = TransformStamped()
-            t_body_to_livox.header.stamp = rclpy.time.Time(seconds=0).to_msg()  # Use Time(0) for static transforms
-            t_body_to_livox.header.frame_id = 'body'
-            t_body_to_livox.child_frame_id = 'livox_frame'
-            
-            # LiDAR position: (0.1710, 0, 0.0968) relative to go2 body IMU frame
-            t_body_to_livox.transform.translation.x = 0.1710
-            t_body_to_livox.transform.translation.y = 0.0
-            t_body_to_livox.transform.translation.z = 0.0968 # 0.0908 for XT-16
-            
-            # No rotation (identity quaternion)
-            t_body_to_livox.transform.rotation.x = 0.0
-            t_body_to_livox.transform.rotation.y = 0.0
-            t_body_to_livox.transform.rotation.z = 0.0
-            t_body_to_livox.transform.rotation.w = 1.0
-            
-            # Publish body->livox_frame transform
-            self.tf_static_broadcaster.sendTransform(t_body_to_livox)
-            self.get_logger().info('Published static transforms: map->camera_init, body->livox_frame')
-        else:
-            self.get_logger().info('Published static transforms: map->camera_init')
+        """Publish static transforms - no static transforms needed since we use dynamic transforms"""
+        self.get_logger().info('No static transforms needed - using dynamic transforms')
 
 def main(args=None):
     rclpy.init(args=args)
