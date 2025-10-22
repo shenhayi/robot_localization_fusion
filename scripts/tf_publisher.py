@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-import rclpy
-from rclpy.node import Node
+import rospy
 from geometry_msgs.msg import TransformStamped, PoseStamped
 from nav_msgs.msg import Odometry
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster, Buffer, TransformListener
@@ -9,59 +8,55 @@ import tf2_geometry_msgs
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-class TFFramePublisher(Node):
+class TFFramePublisher:
     def __init__(self):
-        super().__init__('tf_frame_publisher')
+        rospy.init_node('tf_frame_publisher')
         
         # Create static and dynamic transform broadcasters
-        self.tf_static_broadcaster = StaticTransformBroadcaster(self)
-        self.tf_broadcaster = TransformBroadcaster(self)
+        self.tf_static_broadcaster = StaticTransformBroadcaster()
+        self.tf_broadcaster = TransformBroadcaster()
         
         # Create TF buffer and listener for transform calculations
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_listener = TransformListener(self.tf_buffer)
         
         # Create publisher for body odometry
-        self.body_odom_publisher = self.create_publisher(Odometry, '/body_odometry', 30)
-        self.body_pose_publisher = self.create_publisher(PoseStamped, '/body_pose', 30)
+        self.body_odom_publisher = rospy.Publisher('/body_odometry', Odometry, queue_size=30)
+        self.body_pose_publisher = rospy.Publisher('/body_pose', PoseStamped, queue_size=30)
         
         # Create publisher for lidar odometry
-        self.lidar_odom_publisher = self.create_publisher(Odometry, '/lidar_odometry', 30)
-        self.lidar_pose_publisher = self.create_publisher(PoseStamped, '/lidar_pose', 30)
+        self.lidar_odom_publisher = rospy.Publisher('/lidar_odometry', Odometry, queue_size=30)
+        self.lidar_pose_publisher = rospy.Publisher('/lidar_pose', PoseStamped, queue_size=30)
         
-        # Declare parameters for fusion mode
-        self.declare_parameter('fusion_mode', 'direct_odometry')  # 'direct_odometry' or 'body_imu_fusion'
-        self.declare_parameter('body_odom_topic', '/body_odometry')
-        
-        # Get fusion mode parameter
-        self.fusion_mode = self.get_parameter('fusion_mode').get_parameter_value().string_value
+        # Get parameters for fusion mode
+        self.fusion_mode = rospy.get_param('~fusion_mode', 'direct_odometry')  # 'direct_odometry' or 'body_imu_fusion'
+        self.body_odom_topic = rospy.get_param('~body_odom_topic', '/body_odometry')
         
         if self.fusion_mode == 'direct_odometry':
             # Subscribe to odometry to get camera_init -> livox_frame transform
-            self.odom_subscription = self.create_subscription(
-                Odometry,
+            self.odom_subscription = rospy.Subscriber(
                 '/Odometry',
+                Odometry,
                 self.odom_callback,
-                30
+                queue_size=30
             )
-            self.get_logger().info('TF Frame Publisher started in direct odometry mode')
+            rospy.loginfo('TF Frame Publisher started in direct odometry mode')
             
         elif self.fusion_mode == 'body_imu_fusion':
             # Subscribe to body odometry to get camera_init -> body transform
-            body_odom_topic = self.get_parameter('body_odom_topic').get_parameter_value().string_value
-            self.body_odom_subscription = self.create_subscription(
-                Odometry,
+            self.body_odom_subscription = rospy.Subscriber(
                 '/Odometry',
+                Odometry,
                 self.body_odom_callback,
-                30
+                queue_size=30
             )
-            self.get_logger().info(f'TF Frame Publisher started in body IMU fusion mode, listening to {body_odom_topic}')
+            rospy.loginfo('TF Frame Publisher started in body IMU fusion mode, listening to %s', self.body_odom_topic)
         
         # Publish static transforms
         self.publish_static_transforms()
         
         # Create timer to calculate and publish body and lidar odometry
-        self.odom_timer = self.create_timer(1.0/30.0, self.calculate_and_publish_odometry)  # 30Hz
+        self.odom_timer = rospy.Timer(rospy.Duration(1.0/30.0), self.calculate_and_publish_odometry)  # 30Hz
     
     def odom_callback(self, msg):
         """Callback for odometry to publish camera_init -> livox_frame transforms"""
@@ -110,7 +105,7 @@ class TFFramePublisher(Node):
         try:
             # Get transform from map to livox_frame
             transform = self.tf_buffer.lookup_transform(
-                'map', 'livox_frame', rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1)
+                'map', 'livox_frame', rospy.Time(), timeout=rospy.Duration(0.1)
             )
             
             # Create body odometry message
@@ -164,14 +159,14 @@ class TFFramePublisher(Node):
             self.body_pose_publisher.publish(body_pose)
             
         except Exception as e:
-            self.get_logger().debug(f'Could not calculate body odometry: {str(e)}')
+            rospy.logdebug('Could not calculate body odometry: %s', str(e))
     
     def calculate_and_publish_lidar_odometry(self):
         """Calculate lidar (livox_frame) odometry relative to map and publish it"""
         try:
             # Get transform from map to livox_frame
             transform = self.tf_buffer.lookup_transform(
-                'map', 'livox_frame', rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1)
+                'map', 'livox_frame', rospy.Time(), timeout=rospy.Duration(0.1)
             )
             
             # Create lidar odometry message
@@ -208,9 +203,9 @@ class TFFramePublisher(Node):
             self.lidar_pose_publisher.publish(lidar_pose)
             
         except Exception as e:
-            self.get_logger().debug(f'Could not calculate lidar odometry: {str(e)}')
+            rospy.logdebug('Could not calculate lidar odometry: %s', str(e))
     
-    def calculate_and_publish_odometry(self):
+    def calculate_and_publish_odometry(self, event):
         """Calculate and publish both body and lidar odometry"""
         self.calculate_and_publish_body_odometry()
         self.calculate_and_publish_lidar_odometry()
@@ -219,7 +214,7 @@ class TFFramePublisher(Node):
         """Publish static transforms based on fusion mode"""
         # Always publish livox_frame -> body transform (LiDAR offset)
         t_livox_to_body = TransformStamped()
-        t_livox_to_body.header.stamp = rclpy.time.Time(seconds=0).to_msg()  # Use Time(0) for static transforms
+        t_livox_to_body.header.stamp = rospy.Time(0)  # Use Time(0) for static transforms
         t_livox_to_body.header.frame_id = 'livox_frame'
         t_livox_to_body.child_frame_id = 'body'
         
@@ -237,7 +232,7 @@ class TFFramePublisher(Node):
         
         # Always publish map -> camera_init transform (fixed reference frame)
         t_map_to_camera_init = TransformStamped()
-        t_map_to_camera_init.header.stamp = rclpy.time.Time(seconds=0).to_msg()  # Use Time(0) for static transforms
+        t_map_to_camera_init.header.stamp = rospy.Time(0)  # Use Time(0) for static transforms
         t_map_to_camera_init.header.frame_id = 'map'
         t_map_to_camera_init.child_frame_id = 'camera_init'
         
@@ -255,20 +250,15 @@ class TFFramePublisher(Node):
         # Publish static transforms
         self.tf_static_broadcaster.sendTransform(t_livox_to_body)
         self.tf_static_broadcaster.sendTransform(t_map_to_camera_init)
-        self.get_logger().info('Published static transforms: livox_frame->body, map->camera_init')
+        rospy.loginfo('Published static transforms: livox_frame->body, map->camera_init')
 
-def main(args=None):
-    rclpy.init(args=args)
-    
+def main():
     tf_publisher = TFFramePublisher()
     
     try:
-        rclpy.spin(tf_publisher)
-    except KeyboardInterrupt:
+        rospy.spin()
+    except rospy.ROSInterruptException:
         pass
-    finally:
-        tf_publisher.destroy_node()
-        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

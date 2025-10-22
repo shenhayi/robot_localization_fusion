@@ -1,17 +1,13 @@
 <?xml version="1.0"?>
-<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
-<package format="3">
+<package format="2">
   <name>robot_localization_fusion</name>
   <version>1.0.0</version>
-  <description>ROS2 package for fusing Odometry and IMU data using robot_localization</description>
+  <description>ROS1 package for fusing Odometry and IMU data using robot_localization</description>
   <maintainer email="user@example.com">User</maintainer>
   <license>MIT</license>
 
-  <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <buildtool_depend>catkin</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>rclpy</depend>
   <depend>robot_localization</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
@@ -19,11 +15,10 @@
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
-
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
 
   <export>
-    <build_type>ament_cmake</build_type>
+    <build_type>catkin</build_type>
   </export>
 </package>

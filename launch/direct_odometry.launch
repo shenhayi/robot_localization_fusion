@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Launch arguments -->
+  <arg name="config_file" default="$(find robot_localization_fusion)/config/ekf_fusion.yaml" />
+  <arg name="body_odom_topic" default="/body_odometry" />
+  
+  <!-- TF frame publisher node (direct odometry mode) -->
+  <node pkg="robot_localization_fusion" type="tf_publisher.py" name="tf_frame_publisher" output="screen">
+    <param name="fusion_mode" value="direct_odometry" />
+    <param name="body_odom_topic" value="$(arg body_odom_topic)" />
+  </node>
+  
+  <!-- EKF filter node for fusing LIO odometry and livox IMU -->
+  <node pkg="robot_localization" type="ekf_localization_node" name="ekf_filter_node" output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+    <remap from="/odometry/filtered" to="/odom" />
+    <remap from="/pose/filtered" to="/pose" />
+  </node>
+</launch>
