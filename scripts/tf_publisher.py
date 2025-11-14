@@ -203,15 +203,6 @@ class TFFramePublisher:
                     # Check if input odom timestamp is recent (within 0.5 seconds for 10Hz, more lenient)
                     input_odom_age = (current_time - self.latest_input_odom.header.stamp).to_sec()
                     
-                    # Debug: log input odom twist values (only once per second to avoid spam)
-                    if not hasattr(self, '_last_debug_time') or (current_time - self._last_debug_time).to_sec() > 1.0:
-                        rospy.loginfo('Input odom twist.linear: x=%.3f, y=%.3f, z=%.3f, age=%.3f',
-                                     self.latest_input_odom.twist.twist.linear.x,
-                                     self.latest_input_odom.twist.twist.linear.y,
-                                     self.latest_input_odom.twist.twist.linear.z,
-                                     input_odom_age)
-                        self._last_debug_time = current_time
-                    
                     if abs(input_odom_age) < 0.5:
                         # Input odom twist.linear is in camera_init frame (child_frame_id of input odom)
                         # camera_init and body have same orientation (only translation offset),
