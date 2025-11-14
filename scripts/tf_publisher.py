@@ -45,14 +45,21 @@ class TFFramePublisher:
             rospy.loginfo('TF Frame Publisher started in direct odometry mode')
             
         elif self.fusion_mode == 'body_imu_fusion':
-            # Subscribe to body odometry to get camera_init -> body transform
+            # Subscribe to EKF fused odometry output
+            self.ekf_odom_subscription = rospy.Subscriber(
+                '/ekf_odometry',
+                Odometry,
+                self.ekf_odom_callback,
+                queue_size=30
+            )
+            # Also subscribe to input odometry for TF publishing
             self.body_odom_subscription = rospy.Subscriber(
                 '/Odometry',
                 Odometry,
                 self.body_odom_callback,
                 queue_size=30
             )
-            rospy.loginfo('TF Frame Publisher started in body IMU fusion mode, listening to %s', self.body_odom_topic)
+            rospy.loginfo('TF Frame Publisher started in body IMU fusion mode, using EKF for velocity fusion')
         
         # Publish static transforms
         self.publish_static_transforms()
@@ -81,14 +88,19 @@ class TFFramePublisher:
         self.latest_input_odom = None
         self.input_odom_lock = threading.Lock()
         
-        # Subscribe to IMU data
-        self.imu_subscription = rospy.Subscriber(
-            '/livox/imu',
-            Imu,
-            self.imu_callback,
-            queue_size=100
-        )
-        rospy.loginfo('Subscribed to /livox/imu for velocity information')
+        # Store latest EKF fused odometry (for body_imu_fusion mode)
+        self.latest_ekf_odom = None
+        self.ekf_odom_lock = threading.Lock()
+        
+        # Subscribe to IMU data (only needed for direct_odometry mode)
+        if self.fusion_mode == 'direct_odometry':
+            self.imu_subscription = rospy.Subscriber(
+                '/livox/imu',
+                Imu,
+                self.imu_callback,
+                queue_size=100
+            )
+            rospy.loginfo('Subscribed to /livox/imu for velocity information')
     
     def odom_callback(self, msg):
         """Callback for odometry to publish camera_init -> livox_frame transforms"""
@@ -145,9 +157,141 @@ class TFFramePublisher:
         with self.imu_lock:
             self.latest_imu = msg
     
+    def ekf_odom_callback(self, msg):
+        """Callback for EKF fused odometry output"""
+        with self.ekf_odom_lock:
+            self.latest_ekf_odom = msg
+    
     def calculate_and_publish_body_odometry(self):
         """Calculate body odometry by subtracting LiDAR offset from livox_frame position"""
         try:
+            # In body_imu_fusion mode, use EKF fused odometry for twist
+            if self.fusion_mode == 'body_imu_fusion':
+                # Get transform from map to livox_frame for position calculation
+                transform = self.tf_buffer.lookup_transform(
+                    'map', 'livox_frame', rospy.Time(), timeout=rospy.Duration(0.1)
+                )
+                
+                # Create body odometry message
+                body_odom = Odometry()
+                body_odom.header.stamp = transform.header.stamp
+                body_odom.header.frame_id = 'map'
+                body_odom.child_frame_id = 'body'
+                
+                # Calculate position from TF (same as before, no change)
+                lidar_offset_x = 0.1710
+                lidar_offset_y = 0.0
+                lidar_offset_z = 0.0968
+                
+                quat = [transform.transform.rotation.x, 
+                       transform.transform.rotation.y,
+                       transform.transform.rotation.z,
+                       transform.transform.rotation.w]
+                rotation = Rotation.from_quat(quat)
+                rotation_matrix = rotation.as_matrix()
+                
+                lidar_offset_in_body = np.array([lidar_offset_x, lidar_offset_y, lidar_offset_z])
+                lidar_offset_in_map = rotation_matrix @ lidar_offset_in_body
+                
+                body_odom.pose.pose.position.x = transform.transform.translation.x - lidar_offset_in_map[0]
+                body_odom.pose.pose.position.y = transform.transform.translation.y - lidar_offset_in_map[1]
+                body_odom.pose.pose.position.z = transform.transform.translation.z - lidar_offset_in_map[2]
+                
+                body_odom.pose.pose.orientation.x = transform.transform.rotation.x
+                body_odom.pose.pose.orientation.y = transform.transform.rotation.y
+                body_odom.pose.pose.orientation.z = transform.transform.rotation.z
+                body_odom.pose.pose.orientation.w = transform.transform.rotation.w
+                
+                body_odom.pose.covariance = [0.1, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                           0.0, 0.1, 0.0, 0.0, 0.0, 0.0,
+                                           0.0, 0.0, 0.1, 0.0, 0.0, 0.0,
+                                           0.0, 0.0, 0.0, 0.1, 0.0, 0.0,
+                                           0.0, 0.0, 0.0, 0.0, 0.1, 0.0,
+                                           0.0, 0.0, 0.0, 0.0, 0.0, 0.1]
+                
+                # Use EKF fused twist (already fused by EKF from odometry and IMU)
+                with self.ekf_odom_lock:
+                    if self.latest_ekf_odom is not None:
+                        ekf_twist = self.latest_ekf_odom.twist.twist
+                        
+                        # EKF outputs twist in world frame (odom_frame/map frame)
+                        # Need to transform from world frame to body frame using body orientation
+                        vel_world = np.array([
+                            ekf_twist.linear.x,
+                            ekf_twist.linear.y,
+                            ekf_twist.linear.z
+                        ])
+                        
+                        # Transform velocity from world frame (map frame) to body frame
+                        # body_odom.pose.pose.orientation represents body's orientation in map frame
+                        body_quat = Rotation.from_quat([
+                            body_odom.pose.pose.orientation.x,
+                            body_odom.pose.pose.orientation.y,
+                            body_odom.pose.pose.orientation.z,
+                            body_odom.pose.pose.orientation.w
+                        ])
+                        body_rot_matrix = body_quat.as_matrix()
+                        
+                        # Transform velocity from world frame to body frame
+                        # body_rot_matrix is the rotation from map to body
+                        vel_body = body_rot_matrix @ vel_world
+                        
+                        body_odom.twist.twist.linear.x = vel_body[0]
+                        body_odom.twist.twist.linear.y = vel_body[1]
+                        body_odom.twist.twist.linear.z = vel_body[2]
+                        
+                        # Angular velocity remains in body frame (no transformation needed)
+                        body_odom.twist.twist.angular.x = ekf_twist.angular.x
+                        body_odom.twist.twist.angular.y = ekf_twist.angular.y
+                        body_odom.twist.twist.angular.z = ekf_twist.angular.z
+                        
+                        # Use EKF covariance if available
+                        if len(self.latest_ekf_odom.twist.covariance) == 36:
+                            body_odom.twist.covariance = self.latest_ekf_odom.twist.covariance
+                        else:
+                            body_odom.twist.covariance = [0.1, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                        0.0, 0.1, 0.0, 0.0, 0.0, 0.0,
+                                                        0.0, 0.0, 0.1, 0.0, 0.0, 0.0,
+                                                        0.0, 0.0, 0.0, 0.1, 0.0, 0.0,
+                                                        0.0, 0.0, 0.0, 0.0, 0.1, 0.0,
+                                                        0.0, 0.0, 0.0, 0.0, 0.0, 0.1]
+                        
+                        # Update previous velocity for consistency (already in body frame)
+                        self.prev_body_linear_vel = vel_body
+                        self.prev_body_angular_vel = np.array([
+                            ekf_twist.angular.x,
+                            ekf_twist.angular.y,
+                            ekf_twist.angular.z
+                        ])
+                    else:
+                        # EKF odometry not available yet, use fallback
+                        rospy.logwarn_throttle(1.0, 'EKF odometry not available, using fallback')
+                        body_odom.twist.twist.linear.x = self.prev_body_linear_vel[0]
+                        body_odom.twist.twist.linear.y = self.prev_body_linear_vel[1]
+                        body_odom.twist.twist.linear.z = self.prev_body_linear_vel[2]
+                        body_odom.twist.twist.angular.x = self.prev_body_angular_vel[0]
+                        body_odom.twist.twist.angular.y = self.prev_body_angular_vel[1]
+                        body_odom.twist.twist.angular.z = self.prev_body_angular_vel[2]
+                        body_odom.twist.covariance = [0.1, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                   0.0, 0.1, 0.0, 0.0, 0.0, 0.0,
+                                                   0.0, 0.0, 0.1, 0.0, 0.0, 0.0,
+                                                   0.0, 0.0, 0.0, 0.1, 0.0, 0.0,
+                                                   0.0, 0.0, 0.0, 0.0, 0.1, 0.0,
+                                                   0.0, 0.0, 0.0, 0.0, 0.0, 0.1]
+                
+                # Publish body odometry
+                self.body_odom_publisher.publish(body_odom)
+                
+                # Publish body pose
+                body_pose = PoseStamped()
+                body_pose.header = body_odom.header
+                body_pose.pose = body_odom.pose.pose
+                self.body_pose_publisher.publish(body_pose)
+                
+                self.prev_publish_time = rospy.Time.now()
+                return
+            
+            # Direct odometry mode: calculate from TF and manually fuse with IMU
             # Get transform from map to livox_frame
             transform = self.tf_buffer.lookup_transform(
                 'map', 'livox_frame', rospy.Time(), timeout=rospy.Duration(0.1)
@@ -177,6 +321,7 @@ class TFFramePublisher:
             lidar_offset_in_map = rotation_matrix @ lidar_offset_in_body
             
             # Subtract rotated LiDAR offset from livox_frame position to get body position
+            # Note: Pose remains in body frame (no transformation to robot frame)
             body_odom.pose.pose.position.x = transform.transform.translation.x - lidar_offset_in_map[0]
             body_odom.pose.pose.position.y = transform.transform.translation.y - lidar_offset_in_map[1]
             body_odom.pose.pose.position.z = transform.transform.translation.z - lidar_offset_in_map[2]
@@ -194,7 +339,7 @@ class TFFramePublisher:
                                        0.0, 0.0, 0.0, 0.0, 0.1, 0.0,
                                        0.0, 0.0, 0.0, 0.0, 0.0, 0.1]
             
-            # Calculate velocity (twist) from input Odometry and IMU
+            # Calculate velocity (twist) from input Odometry and IMU (manual fusion)
             current_time = rospy.Time.now()  # Use current time for consistent 30Hz publishing
             
             # Get linear velocity from input Odometry (10Hz, more accurate than pose difference)
@@ -205,16 +350,28 @@ class TFFramePublisher:
                     
                     if abs(input_odom_age) < 0.5:
                         # Input odom twist.linear is in camera_init frame (child_frame_id of input odom)
-                        # camera_init and body have same orientation (only translation offset),
-                        # so linear velocity is the same in both frames
-                        vel_camera_init = np.array([
+                        # camera_init and map have same orientation (only translation offset),
+                        # so velocity in camera_init frame equals velocity in map frame (world frame)
+                        vel_map = np.array([
                             self.latest_input_odom.twist.twist.linear.x,
                             self.latest_input_odom.twist.twist.linear.y,
                             self.latest_input_odom.twist.twist.linear.z
                         ])
                         
-                        # Use input odom velocity directly (it's already in the correct frame)
-                        vel_body = vel_camera_init.copy()
+                        # Transform velocity from map frame (world frame) to body frame
+                        # body_odom.pose.pose.orientation represents body's orientation in map frame
+                        # Use this orientation to transform velocity from map to body frame
+                        body_quat = Rotation.from_quat([
+                            body_odom.pose.pose.orientation.x,
+                            body_odom.pose.pose.orientation.y,
+                            body_odom.pose.pose.orientation.z,
+                            body_odom.pose.pose.orientation.w
+                        ])
+                        body_rot_matrix = body_quat.as_matrix()
+                        
+                        # Transform velocity from map frame to body frame
+                        # body_rot_matrix is the rotation from map to body
+                        vel_body = body_rot_matrix @ vel_map
                         
                         # Optionally fuse with IMU linear acceleration for smoothing
                         with self.imu_lock:
@@ -228,7 +385,7 @@ class TFFramePublisher:
                                         self.latest_imu.linear_acceleration.z
                                     ])
                                     
-                                    # Integrate acceleration to get velocity change
+                                    # Integrate acceleration to get velocity change (in body frame)
                                     # vel_new = vel_old + accel * dt
                                     vel_from_accel = self.prev_body_linear_vel + imu_accel * dt
                                     
@@ -238,27 +395,30 @@ class TFFramePublisher:
                                     weight_imu = 0.2
                                     vel_body = weight_odom * vel_body + weight_imu * vel_from_accel
                         
+                        # Body and robot frame have the same orientation, so velocity is in robot frame
                         body_odom.twist.twist.linear.x = vel_body[0]
                         body_odom.twist.twist.linear.y = vel_body[1]
                         body_odom.twist.twist.linear.z = vel_body[2]
                         self.prev_body_linear_vel = vel_body
                     else:
-                        # Input odom too old, use previous velocity
+                        # Input odom too old, use previous velocity (already in robot frame)
                         body_odom.twist.twist.linear.x = self.prev_body_linear_vel[0]
                         body_odom.twist.twist.linear.y = self.prev_body_linear_vel[1]
                         body_odom.twist.twist.linear.z = self.prev_body_linear_vel[2]
                 else:
-                    # No input odom available, use previous velocity
+                    # No input odom available, use previous velocity (already in robot frame)
                     body_odom.twist.twist.linear.x = self.prev_body_linear_vel[0]
                     body_odom.twist.twist.linear.y = self.prev_body_linear_vel[1]
                     body_odom.twist.twist.linear.z = self.prev_body_linear_vel[2]
             
             # Use IMU angular velocity (body and livox_frame have same orientation, so angular velocity is the same)
+            # Note: Angular velocity remains in body frame (not transformed to robot frame)
             # Always use latest IMU data if available (IMU is high frequency, so it's always recent)
             with self.imu_lock:
                 if self.latest_imu is not None:
                     # Use IMU angular velocity directly (already in livox_frame/body frame)
                     # IMU is high frequency (>30Hz), so data is always recent
+                    # Angular velocity is the same in body and robot frame (only rotation relationship)
                     body_odom.twist.twist.angular.x = self.latest_imu.angular_velocity.x
                     body_odom.twist.twist.angular.y = self.latest_imu.angular_velocity.y
                     body_odom.twist.twist.angular.z = self.latest_imu.angular_velocity.z
