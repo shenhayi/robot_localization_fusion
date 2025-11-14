@@ -239,7 +239,7 @@ class TFFramePublisher:
         # Camera_init is a fixed reference frame at origin
         t_map_to_camera_init.transform.translation.x = 0.1710
         t_map_to_camera_init.transform.translation.y = 0.0
-        t_map_to_camera_init.transform.translation.z = 0.0968
+        t_map_to_camera_init.transform.translation.z = 0.43
         
         # Camera_init has fixed orientation (identity)
         t_map_to_camera_init.transform.rotation.x = 0.0
